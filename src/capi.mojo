@@ -1,16 +1,10 @@
 """C ABI kernels for the supported vedo mesh-analysis subset."""
 
 from std.math import acos, sqrt
-from std.algorithm import parallelize
 from std.sys.info import simd_width_of
 
 comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
-comptime POINT_DISTANCE_PARALLEL_THRESHOLD = 1_000_000
-comptime POINT_DISTANCE_CHUNK = 128
-comptime POINT_DISTANCE_WORKERS = 36
-
-
 def sqdist3(a: FPtr, ai: Int, b: FPtr, bi: Int) -> Float64:
     var x = a[ai] - b[bi]
     var y = a[ai + 1] - b[bi + 1]
@@ -115,15 +109,7 @@ def mvd_point_distances(a_addr: Int, na: Int, b_addr: Int, nb: Int, dst_addr: In
     var a = FPtr(unsafe_from_address=a_addr)
     var b = FPtr(unsafe_from_address=b_addr)
     var dst = FPtr(unsafe_from_address=dst_addr)
-    if na * nb >= POINT_DISTANCE_PARALLEL_THRESHOLD:
-        var chunks = (na + POINT_DISTANCE_CHUNK - 1) // POINT_DISTANCE_CHUNK
-        def work(chunk: Int) {var a, var b, var na, var nb, var dst}:
-            var start = chunk * POINT_DISTANCE_CHUNK
-            var stop = min(start + POINT_DISTANCE_CHUNK, na)
-            point_distance_range(a, start, stop, b, nb, dst)
-        parallelize(work, chunks, POINT_DISTANCE_WORKERS)
-    else:
-        point_distance_range(a, 0, na, b, nb, dst)
+    point_distance_range(a, 0, na, b, nb, dst)
 
 
 @export("mvd_chamfer_distances")
@@ -132,23 +118,8 @@ def mvd_chamfer_distances(a_addr: Int, na: Int, b_addr: Int, nb: Int, a_dst_addr
     var b = FPtr(unsafe_from_address=b_addr)
     var a_dst = FPtr(unsafe_from_address=a_dst_addr)
     var b_dst = FPtr(unsafe_from_address=b_dst_addr)
-    if 2 * na * nb >= POINT_DISTANCE_PARALLEL_THRESHOLD:
-        var a_chunks = (na + POINT_DISTANCE_CHUNK - 1) // POINT_DISTANCE_CHUNK
-        var b_chunk = max(1, (POINT_DISTANCE_CHUNK * nb) // na)
-        var b_chunks = (nb + b_chunk - 1) // b_chunk
-        def work(chunk: Int) {var a, var b, var na, var nb, var a_dst, var b_dst, var a_chunks, var b_chunk}:
-            if chunk < a_chunks:
-                var start = chunk * POINT_DISTANCE_CHUNK
-                var stop = min(start + POINT_DISTANCE_CHUNK, na)
-                point_distance_range(a, start, stop, b, nb, a_dst)
-            else:
-                var start = (chunk - a_chunks) * b_chunk
-                var stop = min(start + b_chunk, nb)
-                point_distance_range(b, start, stop, a, na, b_dst)
-        parallelize(work, a_chunks + b_chunks, POINT_DISTANCE_WORKERS)
-    else:
-        point_distance_range(a, 0, na, b, nb, a_dst)
-        point_distance_range(b, 0, nb, a, na, b_dst)
+    point_distance_range(a, 0, na, b, nb, a_dst)
+    point_distance_range(b, 0, nb, a, na, b_dst)
 
 
 @export("mvd_surface_distances")
