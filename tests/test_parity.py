@@ -45,6 +45,16 @@ def test_point_distance_parallel_threshold_matches_numpy():
     np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
 
 
+def test_chamfer_parallel_combined_schedule_with_simd_tails():
+    rng = np.random.default_rng(23)
+    a = rng.normal(size=(513, 3))
+    b = rng.normal(size=(511, 3))
+    got = Points(a).chamfer_distance(Points(b))
+    distances = np.sqrt(((a[:, None, :] - b[None, :, :]) ** 2).sum(axis=2))
+    expected = (distances.min(axis=1).mean() + distances.min(axis=0).mean()) / 2.0
+    assert got == pytest.approx(expected, rel=1e-12, abs=1e-12)
+
+
 def test_ffi_input_validation_prevents_lossy_casts_and_empty_chamfer():
     with pytest.raises(TypeError, match="integer dtype"):
         Mesh([TRI_POINTS, np.array([[0.0, 1.0, 2.0]])])

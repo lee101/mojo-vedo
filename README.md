@@ -51,18 +51,20 @@ FFI input validation and the SIMD and parallel-loop boundaries.
 ## Benchmark
 
 Measured with `pixi run bench` on Linux 6.8.0-136-generic x86_64, glibc 2.39, Python
-3.13.14, on 2026-08-02. Times are the best of three complete calls; library loading is
+3.13.14, on 2026-08-27. Times are the best of three complete calls; library loading is
 warmed up before timing.
 
 | operation | mojo-vedo | vedo | ratio | result |
 |---|---:|---:|---:|---|
-| point distance (12k x 3k) | 13.3 ms | 18.8 ms | 1.41x | faster |
-| Chamfer distance (12k, 3k) | 18.9 ms | 24.8 ms | 1.31x | faster |
+| point distance (12k x 3k) | 8.8 ms | 17.6 ms | 1.99x | faster |
+| Chamfer distance (12k, 3k) | 13.0 ms | 24.6 ms | 1.89x | faster |
 
 Point scans use SIMD strided loads over the contiguous `(n, 3)` NumPy layout, with a
 scalar remainder, and distribute only sufficiently large independent row chunks across
 CPU workers. Chamfer batches its two directions into one balanced parallel schedule.
-There is no GPU path.
+Each point comparison performs about eight floating-point operations for 24 bytes of
+target coordinates (roughly 0.33 flop/byte), so it is below the arithmetic-intensity
+threshold where a GPU path is justified. There is no GPU path.
 
 ## How it works
 
