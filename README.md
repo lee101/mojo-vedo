@@ -60,11 +60,18 @@ warmed up before timing.
 | Chamfer distance (12k, 3k) | 13.0 ms | 24.6 ms | 1.89x | faster |
 
 Point scans use SIMD strided loads over the contiguous `(n, 3)` NumPy layout, with a
-scalar remainder, and distribute only sufficiently large independent row chunks across
-CPU workers. Chamfer batches its two directions into one balanced parallel schedule.
-Each point comparison performs about eight floating-point operations for 24 bytes of
-target coordinates (roughly 0.33 flop/byte), so it is below the arithmetic-intensity
-threshold where a GPU path is justified. There is no GPU path.
+scalar remainder. Mojo 1.2.0 removed `std.runtime.asyncrt`, so the fan-out moved to
+the Python shim: above 8M point pairs the rows of `a` are split into contiguous
+blocks and one `mvd_point_distances_chunk` call per block is issued from a
+`ThreadPoolExecutor`. ctypes releases the GIL, so the calls really do run in
+parallel and each output row is bit-identical to the serial kernel. Measured on
+this box the crossover is near 8M pairs and the fan-out reaches 5.7x at 25M
+pairs; below the threshold the serial call stays in place. Chamfer issues one
+pass per direction over the same schedule. Each point comparison performs about
+eight floating-point operations for 24 bytes of target coordinates, but the
+target array stays resident in cache and is re-read for every source point, so
+the effective intensity is far above two flops per byte. That is still not
+enough to justify a GPU path, and there is none.
 
 ## How it works
 

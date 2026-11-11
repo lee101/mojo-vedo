@@ -6,7 +6,14 @@ from collections.abc import Iterable
 
 import numpy as np
 
-from ._lib import addr, f64, i64, lib
+from ._lib import (
+    addr,
+    chamfer_distances,
+    f64,
+    i64,
+    lib,
+    point_distances,
+)
 
 
 def _triangles(faces: np.ndarray | None) -> np.ndarray:
@@ -99,8 +106,8 @@ class Mesh:
             if signed:
                 result[_inside(self.coordinates, target)] *= -1.0
         else:
-            lib().mvd_point_distances(addr(self.coordinates), self.npoints, addr(target.coordinates),
-                                      target.npoints, addr(result))
+            point_distances(self.coordinates, self.npoints, target.coordinates,
+                            target.npoints, result)
         if invert:
             result *= -1.0
         self.pointdata[name] = result
@@ -116,8 +123,8 @@ class Mesh:
             raise ValueError("Chamfer distance requires two non-empty point sets")
         a = np.empty(self.npoints, dtype=np.float64)
         b = np.empty(target.npoints, dtype=np.float64)
-        lib().mvd_chamfer_distances(addr(self.coordinates), self.npoints, addr(target.coordinates), target.npoints,
-                                    addr(a), addr(b))
+        chamfer_distances(self.coordinates, self.npoints, target.coordinates,
+                          target.npoints, a, b)
         return float((a.mean() + b.mean()) / 2.0)
 
     def densify(self, target_distance=0.1, nclosest=6, radius=None, niter=1, nmax=None):

@@ -1,7 +1,6 @@
 """C ABI kernels for the supported vedo mesh-analysis subset."""
 
 from std.math import acos, sqrt
-from std.runtime.asyncrt import TaskGroup, initialize_runtime, parallelism_level
 from std.sys.info import simd_width_of
 
 comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
@@ -10,24 +9,6 @@ comptime PARALLEL_DISTANCE_THRESHOLD = 262_144
 comptime PARALLEL_DISTANCE_WORKERS = 36
 comptime PARALLEL_CHAMFER_WORKERS = 72
 
-
-@always_inline
-def parallelize[
-    origins: OriginSet, //, func: def(Int) capturing[origins] -> None
-](num_work_items: Int, max_workers: Int):
-    var worker_count = min(num_work_items, min(max_workers, parallelism_level()))
-    var chunk_size, extra_items = divmod(num_work_items, worker_count)
-
-    async def work_chunk(worker: Int, chunk_size: Int, extra_items: Int):
-        var begin = worker * chunk_size + min(worker, extra_items)
-        var count = chunk_size + Int(worker < extra_items)
-        for item in range(begin, begin + count):
-            func(item)
-
-    var tasks = TaskGroup()
-    for worker in range(worker_count):
-        tasks.create_task(work_chunk(worker, chunk_size, extra_items))
-    tasks.wait()
 
 
 def sqdist3(a: FPtr, ai: Int, b: FPtr, bi: Int) -> Float64:
@@ -60,9 +41,16 @@ def point_min_sqdist(a: FPtr, ai: Int, b: FPtr, nb: Int) -> Float64:
     return best
 
 
+
+
+def fp(addr: Int) -> FPtr:
+    return FPtr(unsafe_from_address=addr)
+
+
 def point_distance_range(a: FPtr, start: Int, stop: Int, b: FPtr, nb: Int, dst: FPtr):
     for i in range(start, stop):
         dst[i] = sqrt(point_min_sqdist(a, 3 * i, b, nb))
+
 
 
 def point_triangle_sqdist(p: FPtr, pi: Int, v: FPtr, ai: Int, bi: Int, ci: Int) -> Float64:
@@ -131,49 +119,14 @@ def point_triangle_sqdist(p: FPtr, pi: Int, v: FPtr, ai: Int, bi: Int, ci: Int) 
 
 @export("mvd_point_distances")
 def mvd_point_distances(a_addr: Int, na: Int, b_addr: Int, nb: Int, dst_addr: Int) abi("C"):
-    var a = FPtr(unsafe_from_address=a_addr)
-    var b = FPtr(unsafe_from_address=b_addr)
-    var dst = FPtr(unsafe_from_address=dst_addr)
-
-    @parameter
-    def process_row(i: Int):
-        dst[i] = sqrt(point_min_sqdist(a, 3 * i, b, nb))
-
-    if na > 1 and na * nb >= PARALLEL_DISTANCE_THRESHOLD:
-        initialize_runtime()
-        parallelize[process_row](na, min(na, PARALLEL_DISTANCE_WORKERS))
-    else:
-        point_distance_range(a, 0, na, b, nb, dst)
+    point_distance_range(fp(a_addr), 0, na, fp(b_addr), nb, fp(dst_addr))
 
 
-@export("mvd_chamfer_distances")
-def mvd_chamfer_distances(a_addr: Int, na: Int, b_addr: Int, nb: Int, a_dst_addr: Int, b_dst_addr: Int) abi("C"):
-    var a = FPtr(unsafe_from_address=a_addr)
-    var b = FPtr(unsafe_from_address=b_addr)
-    var a_dst = FPtr(unsafe_from_address=a_dst_addr)
-    var b_dst = FPtr(unsafe_from_address=b_dst_addr)
-    var rows = na + nb
-
-    @parameter
-    def process_chunk(task: Int):
-        var chunk = task // 2
-        if task % 2 == 0:
-            var start = chunk * na // PARALLEL_DISTANCE_WORKERS
-            var stop = (chunk + 1) * na // PARALLEL_DISTANCE_WORKERS
-            point_distance_range(a, start, stop, b, nb, a_dst)
-        else:
-            var start = chunk * nb // PARALLEL_DISTANCE_WORKERS
-            var stop = (chunk + 1) * nb // PARALLEL_DISTANCE_WORKERS
-            point_distance_range(b, start, stop, a, na, b_dst)
-
-    if rows > 1 and 2 * na * nb >= PARALLEL_DISTANCE_THRESHOLD:
-        initialize_runtime()
-        parallelize[process_chunk](
-            2 * PARALLEL_DISTANCE_WORKERS, PARALLEL_CHAMFER_WORKERS
-        )
-    else:
-        point_distance_range(a, 0, na, b, nb, a_dst)
-        point_distance_range(b, 0, nb, a, na, b_dst)
+@export("mvd_point_distances_chunk")
+def mvd_point_distances_chunk(
+    a_addr: Int, na: Int, b_addr: Int, nb: Int, dst_addr: Int, start: Int, stop: Int
+) abi("C"):
+    point_distance_range(fp(a_addr), start, stop, fp(b_addr), nb, fp(dst_addr))
 
 
 @export("mvd_surface_distances")

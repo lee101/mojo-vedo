@@ -5,8 +5,8 @@ import pytest
 from vedo import Mesh as VedoMesh
 from vedo import Points as VedoPoints
 
+import mojovedo._lib as vedo_lib
 from mojovedo import Mesh, Points
-
 
 TRI_POINTS = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
 TRI_FACES = np.array([[0, 1, 2]])
@@ -36,7 +36,7 @@ def test_point_distance_simd_tail_matches_numpy():
     np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
 
 
-def test_point_distance_parallel_threshold_matches_numpy():
+def test_point_distance_serial_path_matches_numpy():
     rng = np.random.default_rng(19)
     query = rng.normal(size=(1_001, 3))
     target = rng.normal(size=(1_000, 3))
@@ -45,7 +45,7 @@ def test_point_distance_parallel_threshold_matches_numpy():
     np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
 
 
-def test_chamfer_parallel_combined_schedule_with_simd_tails():
+def test_chamfer_serial_path_matches_numpy():
     rng = np.random.default_rng(23)
     a = rng.normal(size=(513, 3))
     b = rng.normal(size=(511, 3))
@@ -53,6 +53,39 @@ def test_chamfer_parallel_combined_schedule_with_simd_tails():
     distances = np.sqrt(((a[:, None, :] - b[None, :, :]) ** 2).sum(axis=2))
     expected = (distances.min(axis=1).mean() + distances.min(axis=0).mean()) / 2.0
     assert got == pytest.approx(expected, rel=1e-12, abs=1e-12)
+
+
+def test_point_distance_threaded_fan_out_is_bit_identical_to_serial(monkeypatch):
+    """Above the threshold the shim splits rows across a pool; every row must
+    land on the same double the serial kernel produces."""
+    rng = np.random.default_rng(29)
+    query = rng.normal(size=(3_001, 3))
+    target = rng.normal(size=(2_996, 3))
+    mesh, other = Points(query), Points(target)
+    monkeypatch.setattr(vedo_lib, "PARALLEL_PAIR_THRESHOLD", 1)
+    threaded = mesh.distance_to(other)
+    monkeypatch.setattr(vedo_lib, "PARALLEL_PAIR_THRESHOLD", 1 << 62)
+    serial = mesh.distance_to(other)
+    assert np.array_equal(threaded, serial)
+    expected = np.array(
+        [np.sqrt(((target - point) ** 2).sum(axis=1)).min() for point in query]
+    )
+    np.testing.assert_allclose(threaded, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_chamfer_threaded_fan_out_is_bit_identical_to_serial(monkeypatch):
+    rng = np.random.default_rng(31)
+    a = rng.normal(size=(2_500, 3))
+    b = rng.normal(size=(2_499, 3))
+    ours_a, ours_b = Points(a), Points(b)
+    monkeypatch.setattr(vedo_lib, "PARALLEL_PAIR_THRESHOLD", 1)
+    threaded = ours_a.chamfer_distance(ours_b)
+    monkeypatch.setattr(vedo_lib, "PARALLEL_PAIR_THRESHOLD", 1 << 62)
+    serial = ours_a.chamfer_distance(ours_b)
+    assert threaded == serial
+    distances = np.sqrt(((a[:, None, :] - b[None, :, :]) ** 2).sum(axis=2))
+    expected = (distances.min(axis=1).mean() + distances.min(axis=0).mean()) / 2.0
+    assert threaded == pytest.approx(expected, rel=1e-12, abs=1e-12)
 
 
 def test_ffi_input_validation_prevents_lossy_casts_and_empty_chamfer():

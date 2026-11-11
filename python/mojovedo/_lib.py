@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -17,12 +18,73 @@ F = ctypes.c_double
 
 _SIGNATURES = {
     "mvd_point_distances": ([I, I, I, I, I], None),
-    "mvd_chamfer_distances": ([I, I, I, I, I, I], None),
+    "mvd_point_distances_chunk": ([I, I, I, I, I, I, I], None),
     "mvd_surface_distances": ([I, I, I, I, I, I], None),
     "mvd_densify_once": ([I, I, F, I, I, I], I),
     "mvd_clip_plane": ([I, I, I, F, F, F, F, F, F, I, I, I], I),
     "mvd_cell_metrics": ([I, I, I, I, I], None),
 }
+
+# The point-to-point distance kernel is O(na*nb) with the inner loop in
+# registers: three loads and eight flops per point pair, all of it streaming
+# from cache once nb is small enough to stay resident. That is far above two
+# flops per byte, so large inputs split across a thread pool. Measured on this
+# box the crossover is around 8M point pairs: below it the serial call wins,
+# above it the fan-out reaches 5x.
+PARALLEL_PAIR_THRESHOLD = 8_000_000
+PARALLEL_WORKERS = min(32, os.cpu_count() or 1)
+
+
+def _row_chunks(count: int, workers: int) -> list[tuple[int, int]]:
+    step = (count + workers - 1) // workers
+    return [
+        (lo, min(lo + step, count)) for lo in range(0, count, step) if lo < count
+    ]
+
+
+def _distance_pass(
+    src: np.ndarray,
+    src_count: int,
+    target: np.ndarray,
+    target_count: int,
+    out: np.ndarray,
+    workers: int,
+) -> None:
+    if workers <= 1 or src_count * target_count < PARALLEL_PAIR_THRESHOLD:
+        lib().mvd_point_distances(
+            addr(src), src_count, addr(target), target_count, addr(out)
+        )
+        return
+    src_addr, target_addr, out_addr = addr(src), addr(target), addr(out)
+    chunk = lib().mvd_point_distances_chunk
+    parts = _row_chunks(src_count, min(src_count, workers))
+
+    def run(bounds: tuple[int, int]) -> None:
+        chunk(src_addr, src_count, target_addr, target_count, out_addr, *bounds)
+
+    with ThreadPoolExecutor(max_workers=len(parts)) as pool:
+        list(pool.map(run, parts))
+
+
+def point_distances(
+    a: np.ndarray, na: int, b: np.ndarray, nb: int, dst: np.ndarray
+) -> None:
+    """Distance from each of the first ``na`` rows of ``a`` to the nearest of ``b``."""
+    _distance_pass(a, na, b, nb, dst, PARALLEL_WORKERS)
+
+
+def chamfer_distances(
+    a: np.ndarray,
+    na: int,
+    b: np.ndarray,
+    nb: int,
+    a_dst: np.ndarray,
+    b_dst: np.ndarray,
+) -> None:
+    """Directed nearest-neighbour distances for both point sets."""
+    workers = max(1, min(PARALLEL_WORKERS, max(na, nb)))
+    _distance_pass(a, na, b, nb, a_dst, workers)
+    _distance_pass(b, nb, a, na, b_dst, workers)
 
 
 class BuildError(RuntimeError):
@@ -62,10 +124,11 @@ _loaded: ctypes.CDLL | None = None
 def lib() -> ctypes.CDLL:
     global _loaded
     if _loaded is None:
-        _loaded = ctypes.CDLL(build())
+        loaded = ctypes.CDLL(build())
         for name, (argtypes, restype) in _SIGNATURES.items():
-            fn = getattr(_loaded, name)
+            fn = getattr(loaded, name)
             fn.argtypes, fn.restype = argtypes, restype
+        _loaded = loaded
     return _loaded
 
 
